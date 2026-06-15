@@ -1,0 +1,34 @@
+export interface IoBrokerState {
+  val: string | number | boolean | null;
+  ts: number;
+  ack: boolean;
+  lc: number;
+  from?: string;
+  q?: number;
+}
+
+export interface IoBrokerObjectCommon {
+  name: string | Record<string, string>;
+  type?: string;
+  role?: string;
+  unit?: string;
+  min?: number;
+  max?: number;
+  read?: boolean;
+  write?: boolean;
+  states?: Record<string, string>;
+  [key: string]: unknown;
+}
+
+export interface IoBrokerObject {
+  _id: string;
+  type: string;
+  common: IoBrokerObjectCommon;
+  native?: Record<string, unknown>;
+  ts?: number;
+}
+
+export interface IoBrokerSetStateResult {
+  id: string;
+  val: string | number | boolean | null;
+}
