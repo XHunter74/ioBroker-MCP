@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { AppConfig } from '../config/configuration.js';
 import {
+  IoBrokerEnum,
+  IoBrokerEnumResult,
   IoBrokerObject,
   IoBrokerSetStateResult,
   IoBrokerState,
@@ -80,5 +82,28 @@ export class IoBrokerService implements OnModuleInit {
       params: { ...this.authParams, pattern },
     });
     return data;
+  }
+
+  async getEnums(stateId?: string): Promise<IoBrokerEnumResult> {
+    const { data } = await this.client.get<Record<string, IoBrokerEnum>>('/objects', {
+      params: this.authParams,
+    });
+
+    const allEnums = Object.values(data).filter(
+      (obj): obj is IoBrokerEnum =>
+        obj.type === 'enum' && Array.isArray(obj.common?.members),
+    );
+
+    const rooms = allEnums.filter(e => e._id.startsWith('enum.rooms.'));
+    const functions = allEnums.filter(e => e._id.startsWith('enum.functions.'));
+
+    if (stateId) {
+      return {
+        rooms: rooms.filter(e => e.common.members.includes(stateId)),
+        functions: functions.filter(e => e.common.members.includes(stateId)),
+      };
+    }
+
+    return { rooms, functions };
   }
 }

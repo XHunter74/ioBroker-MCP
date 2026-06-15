@@ -32,3 +32,20 @@ export interface IoBrokerSetStateResult {
   id: string;
   val: string | number | boolean | null;
 }
+
+export interface IoBrokerEnum {
+  _id: string;
+  type: 'enum';
+  common: {
+    name: string | Record<string, string>;
+    members: string[];
+    color?: string;
+    icon?: string;
+    [key: string]: unknown;
+  };
+}
+
+export interface IoBrokerEnumResult {
+  rooms: IoBrokerEnum[];
+  functions: IoBrokerEnum[];
+}

@@ -104,6 +104,37 @@ export class McpServerFactory {
       },
     );
 
+    server.tool(
+      'get_enums',
+      'Get ioBroker enumerations (rooms and functions). If a state ID is provided, returns only the enums that contain that state.',
+      {
+        state_id: z
+          .string()
+          .optional()
+          .describe('Optional ioBroker state ID to filter enums — returns only rooms/functions this state belongs to'),
+      },
+      async ({ state_id }) => {
+        try {
+          const result = await this.ioBrokerService.getEnums(state_id);
+          const formatEnum = (e: { _id: string; common: { name: unknown; members: string[] } }) => ({
+            id: e._id,
+            name: e.common.name,
+            members: e.common.members,
+          });
+          const output = {
+            rooms: result.rooms.map(formatEnum),
+            functions: result.functions.map(formatEnum),
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(output, null, 2) }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error fetching enums: ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
     return server;
   }
 }
