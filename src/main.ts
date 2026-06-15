@@ -6,6 +6,8 @@ import { AppConfig } from './config/configuration.js';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableCors();
+  // Trust reverse proxy headers (X-Forwarded-Proto, X-Forwarded-Host)
+  app.getHttpAdapter().getInstance().set('trust proxy', true);
 
   const configService = app.get(ConfigService<AppConfig>);
   const port = configService.get('port', { infer: true });

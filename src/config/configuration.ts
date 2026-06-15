@@ -12,6 +12,7 @@ export interface AppConfig {
     clientSecret: string;
     jwtSecret: string;
     tokenExpiry: number;
+    issuer: string;
   };
 }
 
@@ -29,5 +30,6 @@ export default (): AppConfig => ({
     clientSecret: process.env.OAUTH_CLIENT_SECRET ?? '',
     jwtSecret: process.env.OAUTH_JWT_SECRET ?? 'change-me-jwt-secret',
     tokenExpiry: parseInt(process.env.OAUTH_TOKEN_EXPIRY ?? '3600', 10),
+    issuer: process.env.OAUTH_ISSUER ?? '',
   },
 });
