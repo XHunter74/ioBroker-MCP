@@ -53,7 +53,8 @@ export class IoBrokerService implements OnModuleInit {
   }
 
   async getObject(id: string): Promise<IoBrokerObject> {
-    const { data } = await this.client.get<IoBrokerObject>(`/getObject/${id}`, {
+    // /getObject/ is not supported in all simple-api versions; /get/ returns state+object combined
+    const { data } = await this.client.get<IoBrokerObject>(`/get/${id}`, {
       params: this.authParams,
     });
     return data;
@@ -61,9 +62,17 @@ export class IoBrokerService implements OnModuleInit {
 
   async searchStates(pattern: string): Promise<Record<string, IoBrokerState>> {
     const { data } = await this.client.get<Record<string, IoBrokerState>>('/states', {
-      params: { ...this.authParams, pattern },
+      params: this.authParams,
     });
-    return data;
+    const regex = this.globToRegex(pattern);
+    return Object.fromEntries(
+      Object.entries(data).filter(([id]) => regex.test(id)),
+    );
+  }
+
+  private globToRegex(pattern: string): RegExp {
+    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+    return new RegExp(`^${escaped}$`);
   }
 
   async searchObjects(pattern: string): Promise<Record<string, IoBrokerObject>> {
