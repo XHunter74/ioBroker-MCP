@@ -11,15 +11,26 @@ import {
   IoBrokerState,
 } from './iobroker.types.js';
 
+// ioBroker admin WS protocol message types
+const enum WsMsgType { MESSAGE = 0, PING = 1, PONG = 2, CALLBACK = 3 }
+
 @Injectable()
 export class IoBrokerService implements OnModuleInit {
   private readonly logger = new Logger(IoBrokerService.name);
   private client: AxiosInstance;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private socket: any = null;
+  private socketReady: Promise<void> = Promise.resolve();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private adminWs: any = null;
+  private adminWsReady: Promise<void> = Promise.resolve();
+  private adminWsCallbackId = 0;
+  private readonly adminWsCallbacks = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
 
   constructor(private readonly configService: ConfigService<AppConfig>) {}
 
   async onModuleInit() {
-    const { host, port, useAuth, user, password } =
+    const { host, port, adminHost, adminPort, useAuth, user, password } =
       this.configService.get('iobroker', { infer: true });
 
     const axiosAuth = useAuth ? { username: user, password } : undefined;
@@ -38,6 +49,18 @@ export class IoBrokerService implements OnModuleInit {
         this.client.defaults.headers.common['Cookie'] = cookie;
         this.logger.log('Session cookie initialized');
       }
+
+      // Socket.io connection for setObject / setState operations
+      this.socketReady = this.connectSocket(host, port, user, password);
+      this.socketReady.catch(err =>
+        this.logger.warn(`Socket.io not available: ${err?.message ?? err}`),
+      );
+
+      // Admin WS connection (ioBroker custom protocol) for delObject — admin.2 has auth:false
+      this.adminWsReady = this.connectAdminWs(adminHost, adminPort);
+      this.adminWsReady.catch(err =>
+        this.logger.warn(`Admin WS not available: ${err?.message ?? err}`),
+      );
     }
 
     this.logger.log(`Connected to ioBroker at http://${host}:${port} (auth: ${useAuth})`);
@@ -74,6 +97,212 @@ export class IoBrokerService implements OnModuleInit {
       params: { pattern },
     });
     return data;
+  }
+
+  async getEnums(stateId?: string): Promise<IoBrokerEnumResult> {
+    const [roomsResp, functionsResp] = await Promise.all([
+      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
+        params: { pattern: 'enum.rooms.*', type: 'enum' },
+      }),
+      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
+        params: { pattern: 'enum.functions.*', type: 'enum' },
+      }),
+    ]);
+
+    const toList = (data: Record<string, IoBrokerEnum>): IoBrokerEnum[] =>
+      Object.values(data).filter(
+        (obj): obj is IoBrokerEnum => obj?.type === 'enum' && Array.isArray(obj.common?.members),
+      );
+
+    const rooms = toList(roomsResp.data);
+    const functions = toList(functionsResp.data);
+
+    if (stateId) {
+      const matches = (members: string[]) =>
+        members.some(m => m === stateId || stateId.startsWith(m + '.'));
+      return {
+        rooms: rooms.filter(e => matches(e.common.members)),
+        functions: functions.filter(e => matches(e.common.members)),
+      };
+    }
+
+    return { rooms, functions };
+  }
+
+  async createState(
+    id: string,
+    common: { name: string; type?: string; role?: string; unit?: string },
+    initialValue?: string | number | boolean | null,
+  ): Promise<{ id: string }> {
+    const result = await this.socketEmit<{ id: string }>('setObject', id, {
+      type: 'state',
+      common: { type: 'mixed', role: 'state', read: true, write: true, ...common },
+      native: {},
+    });
+    if (initialValue !== undefined) {
+      await this.socketEmit('setState', id, { val: initialValue, ack: false });
+    }
+    return result ?? { id };
+  }
+
+  async deleteState(id: string): Promise<void> {
+    await this.adminWsEmit('delObject', id, { recursive: true });
+  }
+
+  // ── Private helpers ──────────────────────────────────────────────────────
+
+  private async connectSocket(
+    host: string,
+    port: number,
+    user: string,
+    password: string,
+  ): Promise<void> {
+    // socket.io-client v2 is needed — ioBroker uses socket.io v2.5.x (EIO=3)
+    // Dynamic import handles CJS interop correctly
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ioModule: any = await import('socket.io-client');
+    const ioConnect: (url: string, opts?: object) => any = ioModule.default ?? ioModule;
+
+    return new Promise<void>((resolve, reject) => {
+      this.socket = ioConnect(`http://${host}:${port}`, {
+        query: { user, pass: password },
+        transports: ['polling', 'websocket'],
+        reconnection: false,
+      });
+
+      this.socket.on('connect', () => {
+        this.logger.log('Socket.io connected');
+        // Server needs ~1 s after connect to register all event handlers
+        setTimeout(resolve, 1000);
+      });
+
+      this.socket.on('connect_error', (err: Error) => {
+        this.logger.error(`Socket.io connect error: ${err?.message ?? err}`);
+        reject(err);
+      });
+    });
+  }
+
+  private socketEmit<T = void>(event: string, ...args: unknown[]): Promise<T> {
+    return new Promise(async (resolve, reject) => {
+      try {
+        await this.socketReady;
+      } catch (e) {
+        return reject(new Error(`Socket not available: ${e}`));
+      }
+      if (!this.socket?.connected) {
+        return reject(new Error('Socket not connected'));
+      }
+      const timer = setTimeout(
+        () => reject(new Error(`Socket timeout on "${event}"`)),
+        10_000,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.socket.emit(event, ...args, (err: any, result: T) => {
+        clearTimeout(timer);
+        if (err) {
+          const msg = String(err);
+          reject(
+            new Error(
+              msg === 'permissionError'
+                ? `Permission denied: "${event}" is not allowed on this socket interface`
+                : msg,
+            ),
+          );
+        } else {
+          resolve(result);
+        }
+      });
+    });
+  }
+
+  private connectAdminWs(host: string, adminPort: number): Promise<void> {
+    return new Promise<void>((resolve, reject) => {
+      const sid = Date.now();
+      const url = `ws://${host}:${adminPort}/?sid=${sid}&name=iobroker-mcp`;
+
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const WsClass = require('ws');
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const ws: any = new WsClass(url);
+
+      const timeout = setTimeout(() => {
+        ws.terminate?.();
+        reject(new Error('Admin WS connection timeout'));
+      }, 10_000);
+
+      ws.on('open', () => {
+        this.logger.log(`Admin WS connected to ws://${host}:${adminPort}`);
+      });
+
+      ws.on('message', (data: Buffer | string) => {
+        let msg: unknown[];
+        try { msg = JSON.parse(data.toString()); } catch { return; }
+
+        const type: number = msg[0] as number;
+        const id: number = msg[1] as number;
+        const name: string = msg[2] as string;
+        const args: unknown[] = msg[3] as unknown[];
+
+        if (type === WsMsgType.PING) {
+          ws.send(JSON.stringify([WsMsgType.PONG]));
+          return;
+        }
+
+        if (type === WsMsgType.MESSAGE && name === '___ready___') {
+          clearTimeout(timeout);
+          this.adminWs = ws;
+          resolve();
+          return;
+        }
+
+        if (type === WsMsgType.CALLBACK) {
+          const cb = this.adminWsCallbacks.get(id);
+          if (cb) {
+            clearTimeout(cb.timer);
+            this.adminWsCallbacks.delete(id);
+            const error = args?.[0] as string | null;
+            if (error) cb.reject(new Error(error));
+            else cb.resolve(args?.[1]);
+          }
+        }
+      });
+
+      ws.on('error', (err: Error) => {
+        clearTimeout(timeout);
+        this.adminWs = null;
+        reject(err);
+      });
+
+      ws.on('close', () => {
+        this.adminWs = null;
+        this.logger.warn('Admin WS disconnected');
+      });
+    });
+  }
+
+  private adminWsEmit<T = void>(command: string, ...args: unknown[]): Promise<T> {
+    return new Promise(async (resolve, reject) => {
+      try {
+        await this.adminWsReady;
+      } catch (e) {
+        return reject(new Error(`Admin WS not available: ${e}`));
+      }
+      if (!this.adminWs) {
+        return reject(new Error('Admin WS not connected'));
+      }
+      const id = ++this.adminWsCallbackId;
+      const timer = setTimeout(() => {
+        this.adminWsCallbacks.delete(id);
+        reject(new Error(`Admin WS timeout on "${command}"`));
+      }, 10_000);
+      this.adminWsCallbacks.set(id, {
+        resolve: v => resolve(v as T),
+        reject,
+        timer,
+      });
+      this.adminWs.send(JSON.stringify([WsMsgType.CALLBACK, id, command, args]));
+    });
   }
 
   private fetchSessionCookie(
@@ -115,33 +344,5 @@ export class IoBrokerService implements OnModuleInit {
       });
 
     return follow('/states?pattern=system.alive');
-  }
-
-  async getEnums(stateId?: string): Promise<IoBrokerEnumResult> {
-    const [roomsResp, functionsResp] = await Promise.all([
-      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
-        params: { pattern: 'enum.rooms.*', type: 'enum' },
-      }),
-      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
-        params: { pattern: 'enum.functions.*', type: 'enum' },
-      }),
-    ]);
-
-    const toList = (data: Record<string, IoBrokerEnum>): IoBrokerEnum[] =>
-      Object.values(data).filter(
-        (obj): obj is IoBrokerEnum => obj?.type === 'enum' && Array.isArray(obj.common?.members),
-      );
-
-    const rooms = toList(roomsResp.data);
-    const functions = toList(functionsResp.data);
-
-    if (stateId) {
-      return {
-        rooms: rooms.filter(e => e.common.members.includes(stateId)),
-        functions: functions.filter(e => e.common.members.includes(stateId)),
-      };
-    }
-
-    return { rooms, functions };
   }
 }

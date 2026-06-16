@@ -23,8 +23,16 @@ export class McpServerFactory {
       },
       async ({ id }) => {
         try {
-          const state = await this.ioBrokerService.getState(id);
-          return { content: [{ type: 'text', text: JSON.stringify(state, null, 2) }] };
+          const [state, enums] = await Promise.all([
+            this.ioBrokerService.getState(id),
+            this.ioBrokerService.getEnums(id).catch(() => null),
+          ]);
+          const result: Record<string, unknown> = { ...state };
+          if (enums) {
+            result.rooms = enums.rooms.map(e => enumName(e.common.name));
+            result.functions = enums.functions.map(e => enumName(e.common.name));
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         } catch (err) {
           return {
             content: [{ type: 'text', text: `Error reading state "${id}": ${errorMessage(err)}` }],
@@ -68,8 +76,16 @@ export class McpServerFactory {
       },
       async ({ id }) => {
         try {
-          const obj = await this.ioBrokerService.getObject(id);
-          return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] };
+          const [obj, enums] = await Promise.all([
+            this.ioBrokerService.getObject(id),
+            this.ioBrokerService.getEnums(id).catch(() => null),
+          ]);
+          const result: Record<string, unknown> = { ...obj };
+          if (enums) {
+            result.rooms = enums.rooms.map(e => enumName(e.common.name));
+            result.functions = enums.functions.map(e => enumName(e.common.name));
+          }
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
         } catch (err) {
           return {
             content: [{ type: 'text', text: `Error reading object "${id}": ${errorMessage(err)}` }],
@@ -135,6 +151,71 @@ export class McpServerFactory {
       },
     );
 
+    server.tool(
+      'create_state',
+      'Create a new user-defined ioBroker state (in the 0_userdata.0 namespace) with an optional initial value',
+      {
+        id: z
+          .string()
+          .describe('Full state ID, e.g. "0_userdata.0.myTemperature"'),
+        name: z
+          .string()
+          .describe('Human-readable label for the state'),
+        type: z
+          .enum(['string', 'number', 'boolean', 'mixed'])
+          .optional()
+          .describe('Data type — string | number | boolean | mixed (default: mixed)'),
+        role: z
+          .string()
+          .optional()
+          .describe('Role hint, e.g. "value", "text", "switch" (default: state)'),
+        unit: z
+          .string()
+          .optional()
+          .describe('Physical unit, e.g. "°C", "%" (optional)'),
+        initial_value: z
+          .union([z.string(), z.number(), z.boolean()])
+          .optional()
+          .describe('Initial value to write after creating the state'),
+      },
+      async ({ id, name, type, role, unit, initial_value }) => {
+        try {
+          const result = await this.ioBrokerService.createState(
+            id,
+            { name, type, role, unit },
+            initial_value,
+          );
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error creating state "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'delete_state',
+      'Delete a user-defined ioBroker state and its object definition',
+      {
+        id: z
+          .string()
+          .describe('State ID to delete, e.g. "0_userdata.0.myTemperature"'),
+      },
+      async ({ id }) => {
+        try {
+          await this.ioBrokerService.deleteState(id);
+          return { content: [{ type: 'text', text: `State "${id}" deleted successfully` }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error deleting state "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
     return server;
   }
 }
@@ -142,4 +223,9 @@ export class McpServerFactory {
 function errorMessage(err: unknown): string {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function enumName(name: string | Record<string, string>): string {
+  if (typeof name === 'string') return name;
+  return name.en ?? name.ru ?? name.de ?? Object.values(name)[0] ?? '';
 }

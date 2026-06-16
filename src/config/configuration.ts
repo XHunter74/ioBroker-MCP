@@ -3,6 +3,8 @@ export interface AppConfig {
   iobroker: {
     host: string;
     port: number;
+    adminHost: string;
+    adminPort: number;
     useAuth: boolean;
     user: string;
     password: string;
@@ -21,6 +23,8 @@ export default (): AppConfig => ({
   iobroker: {
     host: process.env.IOBROKER_HOST ?? 'localhost',
     port: parseInt(process.env.IOBROKER_PORT ?? '8087', 10),
+    adminHost: process.env.IOBROKER_ADMIN_HOST ?? process.env.IOBROKER_HOST ?? 'localhost',
+    adminPort: parseInt(process.env.IOBROKER_ADMIN_PORT ?? '8100', 10),
     useAuth: process.env.IOBROKER_USE_AUTH === 'true',
     user: process.env.IOBROKER_USER ?? '',
     password: process.env.IOBROKER_PASSWORD ?? '',

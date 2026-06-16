@@ -17,6 +17,9 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 | `set_state` | Set the value of a datapoint |
 | `get_object` | Get object definition (type, common, native, acl) |
 | `search_states` | List all states matching a glob pattern |
+| `get_enums` | List rooms and functions (enums); optionally filter by state ID |
+| `create_state` | Create a new datapoint under `0_userdata.0` |
+| `delete_state` | Delete a datapoint and its object definition |
 
 **Examples:**
 
@@ -25,12 +28,16 @@ get_state("zigbee.0.abc123.temperature")
 set_state("sonoff.0.device1.POWER1", false)
 search_states("hm-rpc.0.*")
 get_object("zigbee.0.abc123.link_quality")
+get_enums("zigbee.0.abc123.temperature")
+create_state("0_userdata.0.my_flag", { name: "My Flag", type: "boolean" }, false)
+delete_state("0_userdata.0.my_flag")
 ```
 
 ## Requirements
 
 - Node.js 20+
-- ioBroker with [simple-api](https://github.com/ioBroker/ioBroker.simple-api) adapter running (typically via ioBroker.web on port 8088)
+- ioBroker with [simple-api](https://github.com/ioBroker/ioBroker.simple-api) adapter running (via `ioBroker.web` on port 8082, or standalone on 8087)
+- ioBroker [admin](https://github.com/ioBroker/ioBroker.admin) adapter with an `auth: false` instance (for `delete_state` support — see [Configuration](#configuration))
 
 ## Setup
 
@@ -49,7 +56,9 @@ All configuration is via environment variables (`.env` file):
 ```env
 # ioBroker simple-api connection
 IOBROKER_HOST=localhost          # ioBroker host IP or hostname
-IOBROKER_PORT=8087               # simple-api port (8087 standalone, 8088 via web adapter)
+IOBROKER_PORT=8082               # simple-api port (via web adapter; 8087 for standalone)
+IOBROKER_ADMIN_HOST=             # admin adapter host (defaults to IOBROKER_HOST; set if admin is on a different IP)
+IOBROKER_ADMIN_PORT=8100         # admin adapter port with auth:false (for delete_state)
 IOBROKER_USE_AUTH=false          # set true if ioBroker requires login
 IOBROKER_USER=admin
 IOBROKER_PASSWORD=
@@ -69,6 +78,8 @@ OAUTH_ISSUER=https://mcp.example.com
 ```
 
 > **Note:** `OAUTH_CLIENT_ID` and `OAUTH_CLIENT_SECRET` are mandatory. The server will refuse to start if they are not set.
+
+> **delete_state note:** The base ioBroker socket interface (`web` / `socketio` adapter) intentionally blocks `delObject` for all namespaces except `flot.*` and `fullcalendar.*`. To support `delete_state`, this server connects to the **admin** adapter via its native WebSocket protocol. You need an admin adapter instance with `auth: false` (e.g. `admin.2` on port 8100) reachable from the server host. Set `IOBROKER_ADMIN_PORT` accordingly.
 
 ## OAuth 2.0
 
@@ -172,7 +183,7 @@ src/
 │   └── bearer.guard.ts             # NestJS guard for POST /mcp
 ├── iobroker/
 │   ├── iobroker.module.ts
-│   ├── iobroker.service.ts         # simple-api HTTP client
+│   ├── iobroker.service.ts         # simple-api HTTP + socket.io + admin WS client
 │   └── iobroker.types.ts
 └── mcp/
     ├── mcp.module.ts
