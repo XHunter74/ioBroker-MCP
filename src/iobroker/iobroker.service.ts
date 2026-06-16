@@ -1,3 +1,4 @@
+import * as http from 'http';
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
@@ -14,30 +15,41 @@ import {
 export class IoBrokerService implements OnModuleInit {
   private readonly logger = new Logger(IoBrokerService.name);
   private client: AxiosInstance;
-  private authParams: Record<string, string>;
 
   constructor(private readonly configService: ConfigService<AppConfig>) {}
 
-  onModuleInit() {
+  async onModuleInit() {
     const { host, port, useAuth, user, password } =
       this.configService.get('iobroker', { infer: true });
 
-    const baseUrl = `http://${host}:${port}`;
-    this.authParams = useAuth ? { user, pass: password } : {};
+    const axiosAuth = useAuth ? { username: user, password } : undefined;
 
     this.client = axios.create({
-      baseURL: baseUrl,
+      baseURL: `http://${host}:${port}`,
       timeout: 10_000,
+      auth: axiosAuth,
     });
 
-    this.logger.log(`Connected to ioBroker simple-api at ${baseUrl} (auth: ${useAuth})`);
+    // ioBroker admin (port 8082) requires a session cookie — it redirects the
+    // first request to set one. Obtain it upfront so all requests succeed.
+    if (useAuth) {
+      const cookie = await this.fetchSessionCookie(host, port, axiosAuth);
+      if (cookie) {
+        this.client.defaults.headers.common['Cookie'] = cookie;
+        this.logger.log('Session cookie initialized');
+      }
+    }
+
+    this.logger.log(`Connected to ioBroker at http://${host}:${port} (auth: ${useAuth})`);
   }
 
   async getState(id: string): Promise<IoBrokerState> {
-    const { data } = await this.client.get<IoBrokerState>(`/get/${id}`, {
-      params: this.authParams,
+    const { data } = await this.client.get<Record<string, IoBrokerState>>('/states', {
+      params: { pattern: id },
     });
-    return data;
+    const state = data[id];
+    if (!state) throw new Error(`State "${id}" not found`);
+    return state;
   }
 
   async setState(
@@ -45,57 +57,83 @@ export class IoBrokerService implements OnModuleInit {
     value: string | number | boolean,
     ack?: boolean,
   ): Promise<IoBrokerSetStateResult> {
-    const params: Record<string, unknown> = { ...this.authParams, value };
+    const params: Record<string, unknown> = { value };
     if (ack !== undefined) params.ack = ack;
-
-    const { data } = await this.client.get<IoBrokerSetStateResult>(`/set/${id}`, {
-      params,
-    });
+    const { data } = await this.client.get<IoBrokerSetStateResult>(`/set/${id}`, { params });
     return data;
   }
 
   async getObject(id: string): Promise<IoBrokerObject> {
-    // /getObject/ is not supported in all simple-api versions; /get/ returns state+object combined
-    const { data } = await this.client.get<IoBrokerObject>(`/get/${id}`, {
-      params: this.authParams,
-    });
+    const { data } = await this.client.get<IoBrokerObject>(`/get/${id}`);
+    if (!data?._id) throw new Error(`Object "${id}" not found`);
     return data;
   }
 
   async searchStates(pattern: string): Promise<Record<string, IoBrokerState>> {
     const { data } = await this.client.get<Record<string, IoBrokerState>>('/states', {
-      params: this.authParams,
-    });
-    const regex = this.globToRegex(pattern);
-    return Object.fromEntries(
-      Object.entries(data).filter(([id]) => regex.test(id)),
-    );
-  }
-
-  private globToRegex(pattern: string): RegExp {
-    const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
-    return new RegExp(`^${escaped}$`);
-  }
-
-  async searchObjects(pattern: string): Promise<Record<string, IoBrokerObject>> {
-    const { data } = await this.client.get<Record<string, IoBrokerObject>>('/objects', {
-      params: { ...this.authParams, pattern },
+      params: { pattern },
     });
     return data;
   }
 
+  private fetchSessionCookie(
+    host: string,
+    port: number,
+    auth?: { username: string; password: string },
+  ): Promise<string> {
+    const authHeader = auth
+      ? 'Basic ' + Buffer.from(`${auth.username}:${auth.password}`).toString('base64')
+      : undefined;
+    const collected: string[] = [];
+
+    const follow = (path: string, depth = 0): Promise<string> =>
+      new Promise(resolve => {
+        if (depth > 5) return resolve(collected.join('; '));
+
+        const headers: Record<string, string> = {};
+        if (authHeader) headers['Authorization'] = authHeader;
+        if (collected.length) headers['Cookie'] = collected.join('; ');
+
+        const req = http.get({ host, port, path, headers }, res => {
+          for (const c of res.headers['set-cookie'] ?? []) {
+            collected.push(c.split(';')[0]);
+          }
+          res.resume();
+
+          if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+            const next = res.headers.location.startsWith('/')
+              ? res.headers.location
+              : `/${res.headers.location}`;
+            resolve(follow(next, depth + 1));
+          } else {
+            this.logger.log(`Session cookie: ${collected.join('; ').substring(0, 60)}`);
+            resolve(collected.join('; '));
+          }
+        });
+        req.on('error', () => resolve(collected.join('; ')));
+        req.end();
+      });
+
+    return follow('/states?pattern=system.alive');
+  }
+
   async getEnums(stateId?: string): Promise<IoBrokerEnumResult> {
-    const { data } = await this.client.get<Record<string, IoBrokerEnum>>('/objects', {
-      params: this.authParams,
-    });
+    const [roomsResp, functionsResp] = await Promise.all([
+      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
+        params: { pattern: 'enum.rooms.*', type: 'enum' },
+      }),
+      this.client.get<Record<string, IoBrokerEnum>>('/objects', {
+        params: { pattern: 'enum.functions.*', type: 'enum' },
+      }),
+    ]);
 
-    const allEnums = Object.values(data).filter(
-      (obj): obj is IoBrokerEnum =>
-        obj.type === 'enum' && Array.isArray(obj.common?.members),
-    );
+    const toList = (data: Record<string, IoBrokerEnum>): IoBrokerEnum[] =>
+      Object.values(data).filter(
+        (obj): obj is IoBrokerEnum => obj?.type === 'enum' && Array.isArray(obj.common?.members),
+      );
 
-    const rooms = allEnums.filter(e => e._id.startsWith('enum.rooms.'));
-    const functions = allEnums.filter(e => e._id.startsWith('enum.functions.'));
+    const rooms = toList(roomsResp.data);
+    const functions = toList(functionsResp.data);
 
     if (stateId) {
       return {
