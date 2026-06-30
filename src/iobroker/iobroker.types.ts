@@ -49,3 +49,21 @@ export interface IoBrokerEnumResult {
   rooms: IoBrokerEnum[];
   functions: IoBrokerEnum[];
 }
+
+export interface IoBrokerScript {
+  _id: string;
+  type: 'script';
+  common: {
+    name: string;
+    source: string;
+    enabled: boolean;
+    engineType: string;
+    engine: string;
+    debug?: boolean;
+    verbose?: boolean;
+    expert?: boolean;
+    compiled?: string;
+    sourceHash?: string;
+  };
+  native?: Record<string, unknown>;
+}

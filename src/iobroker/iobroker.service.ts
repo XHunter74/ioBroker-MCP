@@ -7,6 +7,7 @@ import {
   IoBrokerEnum,
   IoBrokerEnumResult,
   IoBrokerObject,
+  IoBrokerScript,
   IoBrokerSetStateResult,
   IoBrokerState,
 } from './iobroker.types.js';
@@ -167,6 +168,47 @@ export class IoBrokerService implements OnModuleInit {
   }
 
   async deleteState(id: string): Promise<void> {
+    await this.adminWsEmit('delObject', id, { recursive: true });
+  }
+
+  async listScripts(pattern = 'script.js.*'): Promise<IoBrokerScript[]> {
+    const { data } = await this.client.get<Record<string, IoBrokerScript>>('/objects', {
+      params: { pattern, type: 'script' },
+    });
+    return Object.values(data).filter((o): o is IoBrokerScript => o?.type === 'script');
+  }
+
+  async getScript(id: string): Promise<IoBrokerScript> {
+    const { data } = await this.client.get<IoBrokerScript>(`/get/${id}`);
+    if (!data?._id) throw new Error(`Script "${id}" not found`);
+    return data;
+  }
+
+  async setScript(
+    id: string,
+    params: { source: string; name?: string; engineType?: string; enabled?: boolean },
+  ): Promise<void> {
+    let base: Partial<IoBrokerScript> = {};
+    try { base = await this.getScript(id); } catch { /* new script */ }
+
+    const obj: IoBrokerScript = {
+      _id: id,
+      type: 'script',
+      common: {
+        name: params.name ?? base.common?.name ?? id.split('.').pop()!,
+        source: params.source,
+        enabled: params.enabled ?? base.common?.enabled ?? true,
+        engineType: params.engineType ?? base.common?.engineType ?? 'JavaScript',
+        engine: base.common?.engine ?? 'system.adapter.javascript.0',
+        debug: base.common?.debug ?? false,
+        verbose: base.common?.verbose ?? false,
+      },
+      native: base.native ?? {},
+    };
+    await this.socketEmit('setObject', id, obj);
+  }
+
+  async deleteScript(id: string): Promise<void> {
     await this.adminWsEmit('delObject', id, { recursive: true });
   }
 

@@ -20,6 +20,10 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 | `get_enums` | List rooms and functions (enums); optionally filter by state ID |
 | `create_state` | Create a new datapoint under `0_userdata.0` |
 | `delete_state` | Delete a datapoint and its object definition |
+| `list_scripts` | List JavaScript adapter scripts (id, name, enabled, engine type) |
+| `get_script` | Get a script's source code and metadata |
+| `set_script` | Create or update a script (JavaScript or TypeScript) |
+| `delete_script` | Delete a script |
 
 **Examples:**
 
@@ -31,6 +35,10 @@ get_object("zigbee.0.abc123.link_quality")
 get_enums("zigbee.0.abc123.temperature")
 create_state("0_userdata.0.my_flag", { name: "My Flag", type: "boolean" }, false)
 delete_state("0_userdata.0.my_flag")
+list_scripts("script.js.Sensors.*")
+get_script("script.js.Sensors.Temperature")
+set_script("script.js.Temp.MyScript", { source: "log('hello');", engineType: "TypeScript/ts" })
+delete_script("script.js.Temp.MyScript")
 ```
 
 ## Requirements

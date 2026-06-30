@@ -196,6 +196,92 @@ export class McpServerFactory {
     );
 
     server.tool(
+      'list_scripts',
+      'List ioBroker JavaScript adapter scripts. Returns id, name, enabled flag, and engine type — no source code.',
+      {
+        pattern: z
+          .string()
+          .optional()
+          .describe('Glob pattern to filter scripts (default: "script.js.*")'),
+      },
+      async ({ pattern }) => {
+        try {
+          const scripts = await this.ioBrokerService.listScripts(pattern);
+          const result = scripts.map(s => ({
+            id: s._id,
+            name: s.common.name,
+            enabled: s.common.enabled,
+            engineType: s.common.engineType,
+          }));
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error listing scripts: ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'get_script',
+      'Get the source code and metadata of an ioBroker JavaScript adapter script by its ID',
+      {
+        id: z.string().describe('Script ID, e.g. "script.js.common.MyScript"'),
+      },
+      async ({ id }) => {
+        try {
+          const script = await this.ioBrokerService.getScript(id);
+          const result = {
+            id: script._id,
+            name: script.common.name,
+            source: script.common.source,
+            enabled: script.common.enabled,
+            engineType: script.common.engineType,
+            engine: script.common.engine,
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(result, null, 2) }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error reading script "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'set_script',
+      'Create or update an ioBroker JavaScript adapter script. On update, existing fields are preserved unless explicitly overridden.',
+      {
+        id: z.string().describe('Script ID, e.g. "script.js.common.MyScript"'),
+        source: z.string().describe('JavaScript or TypeScript source code'),
+        name: z.string().optional().describe('Display name (defaults to the last segment of the ID)'),
+        engine_type: z
+          .enum(['JavaScript', 'TypeScript/ts'])
+          .optional()
+          .describe('Script engine type (default: "JavaScript")'),
+        enabled: z.boolean().optional().describe('Whether the script should run (default: true)'),
+      },
+      async ({ id, source, name, engine_type, enabled }) => {
+        try {
+          await this.ioBrokerService.setScript(id, {
+            source,
+            name,
+            engineType: engine_type,
+            enabled,
+          });
+          return { content: [{ type: 'text', text: `Script "${id}" saved successfully` }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error saving script "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
       'delete_state',
       'Delete a user-defined ioBroker state and its object definition',
       {
@@ -210,6 +296,25 @@ export class McpServerFactory {
         } catch (err) {
           return {
             content: [{ type: 'text', text: `Error deleting state "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'delete_script',
+      'Delete an ioBroker JavaScript adapter script by its ID',
+      {
+        id: z.string().describe('Script ID to delete, e.g. "script.js.common.MyScript"'),
+      },
+      async ({ id }) => {
+        try {
+          await this.ioBrokerService.deleteScript(id);
+          return { content: [{ type: 'text', text: `Script "${id}" deleted successfully` }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error deleting script "${id}": ${errorMessage(err)}` }],
             isError: true,
           };
         }
