@@ -191,12 +191,15 @@ export class IoBrokerService implements OnModuleInit {
     let base: Partial<IoBrokerScript> = {};
     try { base = await this.getScript(id); } catch { /* new script */ }
 
+    // Normalize to CRLF — MCP transport strips \r, but ioBroker JS adapter stores scripts with CRLF
+    const source = params.source.replace(/\r\n/g, '\n').replace(/\n/g, '\r\n');
+
     const obj: IoBrokerScript = {
       _id: id,
       type: 'script',
       common: {
         name: params.name ?? base.common?.name ?? id.split('.').pop()!,
-        source: params.source,
+        source,
         enabled: params.enabled ?? base.common?.enabled ?? true,
         engineType: params.engineType ?? base.common?.engineType ?? 'JavaScript',
         engine: base.common?.engine ?? 'system.adapter.javascript.0',
