@@ -33,7 +33,7 @@ export default (): AppConfig => ({
     clientId: process.env.OAUTH_CLIENT_ID ?? '',
     clientSecret: process.env.OAUTH_CLIENT_SECRET ?? '',
     jwtSecret: process.env.OAUTH_JWT_SECRET ?? 'change-me-jwt-secret',
-    tokenExpiry: parseInt(process.env.OAUTH_TOKEN_EXPIRY ?? '3600', 10),
+    tokenExpiry: parseInt(process.env.OAUTH_TOKEN_EXPIRY ?? '2592000', 10),
     issuer: process.env.OAUTH_ISSUER ?? '',
   },
 });

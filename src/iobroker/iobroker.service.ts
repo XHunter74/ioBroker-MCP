@@ -50,6 +50,27 @@ export class IoBrokerService implements OnModuleInit {
         this.logger.log('Session cookie initialized');
       }
 
+      // Auto-refresh session cookie when ioBroker restarts (stale cookie → 302 redirect)
+      this.client.interceptors.response.use(
+        res => res,
+        async (error: unknown) => {
+          const err = error as import('axios').AxiosError;
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const cfg = err?.config as any;
+          if (cfg && !cfg.__cookieRetried && err?.response?.status === 302) {
+            cfg.__cookieRetried = true;
+            this.logger.warn('Session cookie stale — refreshing');
+            const fresh = await this.fetchSessionCookie(host, port, axiosAuth);
+            if (fresh) {
+              this.client.defaults.headers.common['Cookie'] = fresh;
+              cfg.headers = { ...cfg.headers, Cookie: fresh };
+            }
+            return this.client.request(cfg);
+          }
+          return Promise.reject(error);
+        },
+      );
+
       // Socket.io connection for setObject / setState operations
       this.socketReady = this.connectSocket(host, port, user, password);
       this.socketReady.catch(err =>

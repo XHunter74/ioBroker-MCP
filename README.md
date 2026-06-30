@@ -70,7 +70,7 @@ PORT=3000
 OAUTH_CLIENT_ID=your-client-id
 OAUTH_CLIENT_SECRET=your-client-secret
 OAUTH_JWT_SECRET=change-me-random-secret-min-32-chars
-OAUTH_TOKEN_EXPIRY=3600          # access token lifetime in seconds
+OAUTH_TOKEN_EXPIRY=2592000        # access token lifetime in seconds (default: 30 days)
 
 # Public base URL — required when running behind a reverse proxy
 # Must match the externally reachable URL of this server
