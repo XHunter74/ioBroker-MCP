@@ -24,6 +24,7 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 | `get_script` | Get a script's source code and metadata |
 | `set_script` | Create or update a script (JavaScript or TypeScript) |
 | `delete_script` | Delete a script |
+| `get_logs` | Get server log entries from the last N minutes; filterable by level and adapter |
 
 **Examples:**
 
@@ -39,6 +40,9 @@ list_scripts("script.js.Sensors.*")
 get_script("script.js.Sensors.Temperature")
 set_script("script.js.Temp.MyScript", { source: "log('hello');", engineType: "TypeScript/ts" })
 delete_script("script.js.Temp.MyScript")
+get_logs({ minutes: 30 })
+get_logs({ minutes: 60, level: "error" })
+get_logs({ minutes: 30, adapter: "javascript" })
 ```
 
 ## Requirements

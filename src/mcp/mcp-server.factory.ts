@@ -303,6 +303,54 @@ export class McpServerFactory {
     );
 
     server.tool(
+      'get_logs',
+      'Get ioBroker server log entries from the last N minutes. Supports filtering by log level and adapter name.',
+      {
+        minutes: z
+          .number()
+          .int()
+          .min(1)
+          .max(1440)
+          .optional()
+          .describe('How many minutes back to include (default: 30, max: 1440)'),
+        level: z
+          .enum(['error', 'warn', 'info', 'debug', 'silly', 'all'])
+          .optional()
+          .describe('Filter by log level — "all" returns every level (default: "all")'),
+        adapter: z
+          .string()
+          .optional()
+          .describe('Filter by adapter/source name substring, e.g. "javascript" or "zigbee"'),
+        max_lines: z
+          .number()
+          .int()
+          .min(1)
+          .max(2000)
+          .optional()
+          .describe('Maximum number of log entries to return (default: 500)'),
+      },
+      async ({ minutes, level, adapter, max_lines }) => {
+        try {
+          const entries = await this.ioBrokerService.getLogs({
+            minutes,
+            level,
+            adapter,
+            maxLines: max_lines,
+          });
+          const text = entries.length > 0
+            ? JSON.stringify(entries, null, 2)
+            : `No log entries found for the last ${minutes ?? 30} minutes`;
+          return { content: [{ type: 'text', text }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error fetching logs: ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
       'delete_script',
       'Delete an ioBroker JavaScript adapter script by its ID',
       {

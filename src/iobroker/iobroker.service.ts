@@ -6,6 +6,7 @@ import { AppConfig } from '../config/configuration.js';
 import {
   IoBrokerEnum,
   IoBrokerEnumResult,
+  IoBrokerLogEntry,
   IoBrokerObject,
   IoBrokerScript,
   IoBrokerSetStateResult,
@@ -27,6 +28,7 @@ export class IoBrokerService implements OnModuleInit {
   private adminWsReady: Promise<void> = Promise.resolve();
   private adminWsCallbackId = 0;
   private readonly adminWsCallbacks = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
+  private iobrokerHostId: string | null = null;
 
   constructor(private readonly configService: ConfigService<AppConfig>) {}
 
@@ -215,7 +217,46 @@ export class IoBrokerService implements OnModuleInit {
     await this.adminWsEmit('delObject', id, { recursive: true });
   }
 
+  async getLogs(options: {
+    minutes?: number;
+    level?: string;
+    adapter?: string;
+    maxLines?: number;
+  }): Promise<IoBrokerLogEntry[]> {
+    const minutes = options.minutes ?? 30;
+    const maxLines = options.maxLines ?? 500;
+    const cutoff = Date.now() - minutes * 60_000;
+
+    const hostId = await this.discoverHostId();
+    const raw = await this.adminWsEmit<unknown[]>('sendToHost', hostId, 'getLogs', 2000);
+
+    if (!Array.isArray(raw)) return [];
+
+    const entries: IoBrokerLogEntry[] = [];
+    for (const line of raw) {
+      if (typeof line !== 'string') continue;
+      const parsed = parseLogLine(line);
+      if (!parsed || parsed.ts < cutoff) continue;
+      if (options.level && options.level !== 'all' && parsed.level !== options.level) continue;
+      if (options.adapter && !parsed.source.toLowerCase().includes(options.adapter.toLowerCase())) continue;
+      entries.push(parsed);
+      if (entries.length >= maxLines) break;
+    }
+    return entries;
+  }
+
   // ── Private helpers ──────────────────────────────────────────────────────
+
+  private async discoverHostId(): Promise<string> {
+    if (this.iobrokerHostId) return this.iobrokerHostId;
+    const { data } = await this.client.get<Record<string, { _id: string; type: string }>>('/objects', {
+      params: { pattern: 'system.host.*', type: 'host' },
+    });
+    const id = Object.keys(data)[0];
+    if (!id) throw new Error('No ioBroker host object found');
+    this.iobrokerHostId = id;
+    return id;
+  }
 
   private async connectSocket(
     host: string,
@@ -327,9 +368,15 @@ export class IoBrokerService implements OnModuleInit {
           if (cb) {
             clearTimeout(cb.timer);
             this.adminWsCallbacks.delete(id);
-            const error = args?.[0] as string | null;
-            if (error) cb.reject(new Error(error));
-            else cb.resolve(args?.[1]);
+            const firstArg = args?.[0];
+            if (firstArg === null || typeof firstArg === 'string') {
+              // Standard format: [error|null, result?]
+              if (firstArg) cb.reject(new Error(firstArg as string));
+              else cb.resolve(args?.[1]);
+            } else {
+              // sendToHost-style: result is first arg directly
+              cb.resolve(firstArg);
+            }
           }
         }
       });
@@ -411,4 +458,16 @@ export class IoBrokerService implements OnModuleInit {
 
     return follow('/states?pattern=system.alive');
   }
+}
+
+// eslint-disable-next-line no-control-regex
+const ANSI_RE = /\x1B\[\d+m/g;
+
+function parseLogLine(line: string): IoBrokerLogEntry | null {
+  const clean = line.replace(ANSI_RE, '');
+  const m = clean.match(/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+-\s+(\w+):\s+(\S+)\s+(.*)/);
+  if (!m) return null;
+  const ts = new Date(m[1].replace(' ', 'T')).getTime();
+  if (isNaN(ts)) return null;
+  return { ts, isoDate: new Date(ts).toISOString(), level: m[2], source: m[3], message: m[4].trim() };
 }

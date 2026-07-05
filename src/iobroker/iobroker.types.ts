@@ -50,6 +50,14 @@ export interface IoBrokerEnumResult {
   functions: IoBrokerEnum[];
 }
 
+export interface IoBrokerLogEntry {
+  ts: number;
+  isoDate: string;
+  level: string;
+  source: string;
+  message: string;
+}
+
 export interface IoBrokerScript {
   _id: string;
   type: 'script';
