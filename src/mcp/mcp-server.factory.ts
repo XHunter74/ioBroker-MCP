@@ -121,6 +121,45 @@ export class McpServerFactory {
     );
 
     server.tool(
+      'set_object',
+      'Create or update any ioBroker object by ID. Overwrites the stored object definition.',
+      {
+        id: z.string().describe('ioBroker object ID, e.g. "enum.rooms.living_room" or "0_userdata.0.myDevice"'),
+        object: z.record(z.unknown()).describe('Full object definition — must include at least "type" and "common"'),
+      },
+      async ({ id, object }) => {
+        try {
+          await this.ioBrokerService.setObject(id, object);
+          return { content: [{ type: 'text', text: `Object "${id}" saved successfully` }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error saving object "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
+      'delete_object',
+      'Delete any ioBroker object and its children by ID.',
+      {
+        id: z.string().describe('ioBroker object ID to delete'),
+      },
+      async ({ id }) => {
+        try {
+          await this.ioBrokerService.deleteObject(id);
+          return { content: [{ type: 'text', text: `Object "${id}" deleted successfully` }] };
+        } catch (err) {
+          return {
+            content: [{ type: 'text', text: `Error deleting object "${id}": ${errorMessage(err)}` }],
+            isError: true,
+          };
+        }
+      },
+    );
+
+    server.tool(
       'get_enums',
       'Get ioBroker enumerations (rooms and functions). If a state ID is provided, returns only the enums that contain that state.',
       {

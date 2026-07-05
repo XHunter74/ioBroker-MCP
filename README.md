@@ -18,6 +18,8 @@ A [Model Context Protocol (MCP)](https://modelcontextprotocol.io/) server that e
 | `get_object` | Get object definition (type, common, native, acl) |
 | `search_states` | List all states matching a glob pattern |
 | `get_enums` | List rooms and functions (enums); optionally filter by state ID |
+| `set_object` | Create or update any ioBroker object (type, common, native) |
+| `delete_object` | Delete any ioBroker object and its children |
 | `create_state` | Create a new datapoint under `0_userdata.0` |
 | `delete_state` | Delete a datapoint and its object definition |
 | `list_scripts` | List JavaScript adapter scripts (id, name, enabled, engine type) |

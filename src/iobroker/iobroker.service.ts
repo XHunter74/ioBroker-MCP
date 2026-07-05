@@ -123,6 +123,14 @@ export class IoBrokerService implements OnModuleInit {
     return data;
   }
 
+  async setObject(id: string, obj: Record<string, unknown>): Promise<void> {
+    await this.socketEmit('setObject', id, obj);
+  }
+
+  async deleteObject(id: string): Promise<void> {
+    await this.adminWsEmit('delObject', id, { recursive: true });
+  }
+
   async getEnums(stateId?: string): Promise<IoBrokerEnumResult> {
     const [roomsResp, functionsResp] = await Promise.all([
       this.client.get<Record<string, IoBrokerEnum>>('/objects', {
