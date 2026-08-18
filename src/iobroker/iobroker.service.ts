@@ -29,6 +29,9 @@ export class IoBrokerService implements OnModuleInit {
   private adminWsCallbackId = 0;
   private readonly adminWsCallbacks = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void; timer: NodeJS.Timeout }>();
   private iobrokerHostId: string | null = null;
+  private adminWsHost = '';
+  private adminWsPort = 0;
+  private adminWsReconnectTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly configService: ConfigService<AppConfig>) {}
 
@@ -74,14 +77,16 @@ export class IoBrokerService implements OnModuleInit {
         },
       );
 
-      // Socket.io connection for setObject / setState operations
+      // Socket.io — connects with auto-reconnect enabled
       this.socketReady = this.connectSocket(host, port, user, password);
       this.socketReady.catch(err =>
         this.logger.warn(`Socket.io not available: ${err?.message ?? err}`),
       );
 
-      // Admin WS connection (ioBroker custom protocol) for delObject — admin.2 has auth:false
-      this.adminWsReady = this.connectAdminWs(adminHost, adminPort);
+      // Admin WS — connects with auto-reconnect via scheduleAdminWsReconnect
+      this.adminWsHost = adminHost;
+      this.adminWsPort = adminPort;
+      this.adminWsReady = this.scheduleAdminWsReconnect(0);
       this.adminWsReady.catch(err =>
         this.logger.warn(`Admin WS not available: ${err?.message ?? err}`),
       );
@@ -273,27 +278,47 @@ export class IoBrokerService implements OnModuleInit {
     password: string,
   ): Promise<void> {
     // socket.io-client v2 is needed — ioBroker uses socket.io v2.5.x (EIO=3)
-    // Dynamic import handles CJS interop correctly
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const ioModule: any = await import('socket.io-client');
     const ioConnect: (url: string, opts?: object) => any = ioModule.default ?? ioModule;
 
     return new Promise<void>((resolve, reject) => {
+      let everConnected = false;
+
+      // Reject the initial promise if ioBroker is completely unavailable at startup
+      const startupTimeout = setTimeout(() => {
+        if (!everConnected) reject(new Error('Socket.io connection timeout'));
+      }, 15_000);
+
       this.socket = ioConnect(`http://${host}:${port}`, {
         query: { user, pass: password },
         transports: ['polling', 'websocket'],
-        reconnection: false,
+        reconnection: true,          // auto-reconnect after ioBroker restarts
+        reconnectionDelay: 5_000,
+        reconnectionDelayMax: 30_000,
       });
 
       this.socket.on('connect', () => {
-        this.logger.log('Socket.io connected');
-        // Server needs ~1 s after connect to register all event handlers
-        setTimeout(resolve, 1000);
+        if (!everConnected) {
+          everConnected = true;
+          clearTimeout(startupTimeout);
+          this.logger.log('Socket.io connected');
+          // Server needs ~1 s after connect to register all event handlers
+          setTimeout(resolve, 1000);
+        } else {
+          this.logger.log('Socket.io reconnected');
+        }
+      });
+
+      this.socket.on('disconnect', (reason: string) => {
+        this.logger.warn(`Socket.io disconnected: ${reason}`);
       });
 
       this.socket.on('connect_error', (err: Error) => {
-        this.logger.error(`Socket.io connect error: ${err?.message ?? err}`);
-        reject(err);
+        // After first connect, socket.io retries automatically — just log
+        if (!everConnected) {
+          this.logger.warn(`Socket.io connect error: ${err?.message ?? err}`);
+        }
       });
     });
   }
@@ -306,7 +331,7 @@ export class IoBrokerService implements OnModuleInit {
         return reject(new Error(`Socket not available: ${e}`));
       }
       if (!this.socket?.connected) {
-        return reject(new Error('Socket not connected'));
+        return reject(new Error('Socket not connected — ioBroker may be restarting'));
       }
       const timer = setTimeout(
         () => reject(new Error(`Socket timeout on "${event}"`)),
@@ -391,38 +416,82 @@ export class IoBrokerService implements OnModuleInit {
 
       ws.on('error', (err: Error) => {
         clearTimeout(timeout);
-        this.adminWs = null;
         reject(err);
       });
 
       ws.on('close', () => {
-        this.adminWs = null;
-        this.logger.warn('Admin WS disconnected');
+        clearTimeout(timeout);
+        if (this.adminWs === ws) {
+          // This was the active connection — schedule reconnect
+          this.adminWs = null;
+          this.logger.warn('Admin WS disconnected');
+          for (const [, cb] of this.adminWsCallbacks) {
+            clearTimeout(cb.timer);
+            cb.reject(new Error('Admin WS disconnected'));
+          }
+          this.adminWsCallbacks.clear();
+          this.adminWsReady = this.scheduleAdminWsReconnect(5_000);
+          this.adminWsReady.catch(() => {});
+        } else {
+          // Close during initial connect attempt — handled by error/timeout above
+          this.adminWs = null;
+        }
       });
     });
   }
 
+  // Schedules a reconnect after `delay` ms, then retries with exponential backoff.
+  // Resolves when the connection is established.
+  private scheduleAdminWsReconnect(delay: number): Promise<void> {
+    return new Promise<void>((resolve) => {
+      const attempt = (d: number) => {
+        if (this.adminWsReconnectTimer) clearTimeout(this.adminWsReconnectTimer);
+        this.adminWsReconnectTimer = setTimeout(async () => {
+          this.adminWsReconnectTimer = null;
+          if (d > 0) this.logger.log('Admin WS reconnecting...');
+          try {
+            await this.connectAdminWs(this.adminWsHost, this.adminWsPort);
+            resolve();
+          } catch (err) {
+            const next = Math.min(Math.max(d, 5_000) * 2, 60_000);
+            this.logger.warn(`Admin WS not available: ${(err as Error)?.message ?? err} — retry in ${next / 1000}s`);
+            attempt(next);
+          }
+        }, d);
+      };
+      attempt(delay);
+    });
+  }
+
   private adminWsEmit<T = void>(command: string, ...args: unknown[]): Promise<T> {
-    return new Promise(async (resolve, reject) => {
-      try {
-        await this.adminWsReady;
-      } catch (e) {
-        return reject(new Error(`Admin WS not available: ${e}`));
-      }
-      if (!this.adminWs) {
-        return reject(new Error('Admin WS not connected'));
-      }
-      const id = ++this.adminWsCallbackId;
-      const timer = setTimeout(() => {
-        this.adminWsCallbacks.delete(id);
-        reject(new Error(`Admin WS timeout on "${command}"`));
-      }, 10_000);
-      this.adminWsCallbacks.set(id, {
-        resolve: v => resolve(v as T),
-        reject,
-        timer,
+    return new Promise((resolve, reject) => {
+      // Race against both the connection wait and a hard timeout
+      const overall = setTimeout(
+        () => reject(new Error(`Admin WS timeout on "${command}"`)),
+        10_000,
+      );
+
+      this.adminWsReady.then(() => {
+        if (!this.adminWs) {
+          clearTimeout(overall);
+          return reject(new Error('Admin WS not connected'));
+        }
+        clearTimeout(overall);
+        const id = ++this.adminWsCallbackId;
+        const timer = setTimeout(() => {
+          this.adminWsCallbacks.delete(id);
+          reject(new Error(`Admin WS timeout on "${command}"`));
+        }, 10_000);
+        this.adminWsCallbacks.set(id, {
+          resolve: v => resolve(v as T),
+          reject,
+          timer,
+        });
+        this.adminWs.send(JSON.stringify([WsMsgType.CALLBACK, id, command, args]));
+      }).catch(e => {
+        clearTimeout(overall);
+        reject(new Error(`Admin WS not available: ${e}`));
       });
-      this.adminWs.send(JSON.stringify([WsMsgType.CALLBACK, id, command, args]));
     });
   }
 
