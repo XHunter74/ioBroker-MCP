@@ -282,54 +282,33 @@ export class IoBrokerService implements OnModuleInit {
     const ioModule: any = await import('socket.io-client');
     const ioConnect: (url: string, opts?: object) => any = ioModule.default ?? ioModule;
 
-    return new Promise<void>((resolve, reject) => {
-      let everConnected = false;
+    this.socket = ioConnect(`http://${host}:${port}`, {
+      query: { user, pass: password },
+      transports: ['polling', 'websocket'],
+      reconnection: true,          // auto-reconnect after ioBroker restarts
+      reconnectionDelay: 5_000,
+      reconnectionDelayMax: 30_000,
+    });
 
-      // Reject the initial promise if ioBroker is completely unavailable at startup
-      const startupTimeout = setTimeout(() => {
-        if (!everConnected) reject(new Error('Socket.io connection timeout'));
-      }, 15_000);
+    this.socket.on('connect', () => {
+      this.logger.log('Socket.io connected');
+    });
 
-      this.socket = ioConnect(`http://${host}:${port}`, {
-        query: { user, pass: password },
-        transports: ['polling', 'websocket'],
-        reconnection: true,          // auto-reconnect after ioBroker restarts
-        reconnectionDelay: 5_000,
-        reconnectionDelayMax: 30_000,
-      });
+    this.socket.on('reconnect', () => {
+      this.logger.log('Socket.io reconnected');
+    });
 
-      this.socket.on('connect', () => {
-        if (!everConnected) {
-          everConnected = true;
-          clearTimeout(startupTimeout);
-          this.logger.log('Socket.io connected');
-          // Server needs ~1 s after connect to register all event handlers
-          setTimeout(resolve, 1000);
-        } else {
-          this.logger.log('Socket.io reconnected');
-        }
-      });
+    this.socket.on('disconnect', (reason: string) => {
+      this.logger.warn(`Socket.io disconnected: ${reason}`);
+    });
 
-      this.socket.on('disconnect', (reason: string) => {
-        this.logger.warn(`Socket.io disconnected: ${reason}`);
-      });
-
-      this.socket.on('connect_error', (err: Error) => {
-        // After first connect, socket.io retries automatically — just log
-        if (!everConnected) {
-          this.logger.warn(`Socket.io connect error: ${err?.message ?? err}`);
-        }
-      });
+    this.socket.on('connect_error', (err: Error) => {
+      this.logger.warn(`Socket.io connect error: ${err?.message ?? err}`);
     });
   }
 
   private socketEmit<T = void>(event: string, ...args: unknown[]): Promise<T> {
-    return new Promise(async (resolve, reject) => {
-      try {
-        await this.socketReady;
-      } catch (e) {
-        return reject(new Error(`Socket not available: ${e}`));
-      }
+    return new Promise((resolve, reject) => {
       if (!this.socket?.connected) {
         return reject(new Error('Socket not connected — ioBroker may be restarting'));
       }
